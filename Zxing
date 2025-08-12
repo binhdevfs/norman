@@ -6,14 +6,14 @@ import java.util.HashMap;
 import java.util.Map;
 import javax.imageio.ImageIO;
 
-import com.google.zxing.BarcodeFormat;
-import com.google.zxing.EncodeHintType;
+import com.google.zxing.*;
+import com.google.zxing.client.j2se.MatrixToImageConfig;
 import com.google.zxing.client.j2se.MatrixToImageWriter;
 import com.google.zxing.common.BitMatrix;
 import com.google.zxing.qrcode.QRCodeWriter;
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel;
 
-public class QrWithRoundedCornerLogo {
+public class QrWithRoundedCornerLogoColor {
 
     public static void generateQRCodeWithRoundedCornerLogo(String content, int size, File logoFile, File outputFile) throws Exception {
         Map<EncodeHintType, Object> hints = new HashMap<>();
@@ -23,12 +23,18 @@ public class QrWithRoundedCornerLogo {
 
         QRCodeWriter qrWriter = new QRCodeWriter();
         BitMatrix bitMatrix = qrWriter.encode(content, BarcodeFormat.QR_CODE, size, size, hints);
-        BufferedImage qrImage = MatrixToImageWriter.toBufferedImage(bitMatrix);
+
+        // Tạo ảnh QR dạng RGB (để giữ màu khi overlay)
+        MatrixToImageConfig config = new MatrixToImageConfig(
+                0xFF000000, // Màu ô QR: đen
+                0xFFFFFFFF  // Nền QR: trắng
+        );
+        BufferedImage qrImage = new BufferedImage(size, size, BufferedImage.TYPE_INT_RGB);
+        qrImage.createGraphics().drawImage(MatrixToImageWriter.toBufferedImage(bitMatrix, config), 0, 0, null);
 
         if (logoFile != null && logoFile.exists()) {
             BufferedImage logo = ImageIO.read(logoFile);
 
-            // Tính kích thước logo
             int logoMaxWidth = qrImage.getWidth() * 20 / 100;
             int logoMaxHeight = qrImage.getHeight() * 20 / 100;
             double scale = Math.min((double) logoMaxWidth / logo.getWidth(), (double) logoMaxHeight / logo.getHeight());
@@ -46,6 +52,7 @@ public class QrWithRoundedCornerLogo {
             lg.drawImage(logo, 0, 0, scaledWidth, scaledHeight, null);
             lg.dispose();
 
+            // Vẽ logo lên QR
             Graphics2D g = qrImage.createGraphics();
             g.setComposite(AlphaComposite.SrcOver);
             g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
@@ -57,9 +64,7 @@ public class QrWithRoundedCornerLogo {
             g.setColor(Color.WHITE);
             g.fill(new RoundRectangle2D.Double(x - 5, y - 5, scaledWidth + 10, scaledHeight + 10, cornerRadius + 5, cornerRadius + 5));
 
-            // Vẽ logo
             g.drawImage(roundedLogo, x, y, null);
-
             g.dispose();
         }
 
@@ -71,8 +76,8 @@ public class QrWithRoundedCornerLogo {
             "https://example.com",
             400,
             new File("logo.png"),
-            new File("qr_logo_round_corner.png")
+            new File("qr_logo_round_corner_color.png")
         );
-        System.out.println("QR với logo bo góc đã tạo!");
+        System.out.println("QR với logo bo góc & giữ màu đã tạo!");
     }
 }
