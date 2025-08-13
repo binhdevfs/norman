@@ -9,192 +9,294 @@ import org.w3c.dom.Element;
 
 import javax.xml.bind.JAXBElement;
 import java.io.File;
-import java.util.List;
+import java.util.*;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 public class W14CheckboxFixer {
     
-    public static void fixCheckboxes(String inputPath, String outputPath) throws Docx4JException {
-        // Load the document
+    // Check specific checkboxes by their identifiers
+    public static void checkSpecificCheckboxes(String inputPath, String outputPath, 
+                                             List<String> checkboxesToCheck) throws Docx4JException {
         WordprocessingMLPackage wordPackage = WordprocessingMLPackage.load(new File(inputPath));
         MainDocumentPart documentPart = wordPackage.getMainDocumentPart();
         
-        // Method 1: Find and fix Content Control checkboxes (most common for w14)
-        fixContentControlCheckboxes(documentPart);
+        // Check only specified checkboxes
+        for (String checkboxId : checkboxesToCheck) {
+            checkCheckboxById(documentPart, checkboxId, true);
+        }
         
-        // Method 2: Find and fix using XML manipulation (for stubborn cases)
-        fixCheckboxesViaXML(documentPart);
-        
-        // Save the document
         wordPackage.save(new File(outputPath));
-        System.out.println("Checkboxes fixed and saved to: " + outputPath);
+        System.out.println("Specified checkboxes checked and saved to: " + outputPath);
     }
     
-    private static void fixContentControlCheckboxes(MainDocumentPart documentPart) {
-        try {
-            // Find all SdtElement (Content Controls)
-            ClassFinder finder = new ClassFinder(org.docx4j.openpackaging.parts.relationships.Namespaces.CTSdtBlock.class);
-            new TraversalUtil(documentPart.getContent(), finder);
-            
-            // Also find inline content controls
-            ClassFinder inlineFinder = new ClassFinder(org.docx4j.openpackaging.parts.relationships.Namespaces.CTSdtRun.class);
-            new TraversalUtil(documentPart.getContent(), inlineFinder);
-            
-            // Process found content controls
-            List<Object> contentControls = finder.results;
-            contentControls.addAll(inlineFinder.results);
-            
-            for (Object obj : contentControls) {
-                if (isCheckboxContentControl(obj)) {
-                    setContentControlCheckboxChecked(obj);
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("Error fixing content control checkboxes: " + e.getMessage());
+    // Check a single checkbox by various identifiers
+    public static void checkCheckboxById(MainDocumentPart documentPart, String identifier, boolean checked) {
+        // Try different methods to find the checkbox
+        boolean found = false;
+        
+        // Method 1: By content control tag
+        found = checkByContentControlTag(documentPart, identifier, checked);
+        
+        // Method 2: By content control alias/title
+        if (!found) {
+            found = checkByContentControlAlias(documentPart, identifier, checked);
+        }
+        
+        // Method 3: By content (text near checkbox)
+        if (!found) {
+            found = checkByNearbyText(documentPart, identifier, checked);
+        }
+        
+        // Method 4: By index position
+        if (!found && identifier.matches("\\d+")) {
+            found = checkByIndex(documentPart, Integer.parseInt(identifier), checked);
+        }
+        
+        if (found) {
+            System.out.println("Checkbox '" + identifier + "' set to " + (checked ? "checked" : "unchecked"));
+        } else {
+            System.out.println("Checkbox '" + identifier + "' not found");
         }
     }
     
-    private static boolean isCheckboxContentControl(Object sdt) {
-        try {
-            // Check if this is a checkbox content control
-            String xml = XmlUtils.marshaltoString(sdt, true);
-            return xml.contains("w14:checkbox") || xml.contains("checkbox") && xml.contains("☐");
-        } catch (Exception e) {
-            return false;
-        }
-    }
-    
-    private static void setContentControlCheckboxChecked(Object sdt) {
-        try {
-            // Get the XML representation
-            org.w3c.dom.Document doc = XmlUtils.marshaltoW3CDomDocument(sdt);
-            
-            // Find checkbox elements in w14 namespace
-            org.w3c.dom.NodeList checkboxNodes = doc.getElementsByTagNameNS(
-                "http://schemas.microsoft.com/office/word/2010/wordml", "checkbox");
-            
-            for (int i = 0; i < checkboxNodes.getLength(); i++) {
-                Element checkbox = (Element) checkboxNodes.item(i);
-                
-                // Find or create the checked element
-                org.w3c.dom.NodeList checkedNodes = checkbox.getElementsByTagNameNS(
-                    "http://schemas.microsoft.com/office/word/2010/wordml", "checked");
-                
-                Element checkedElement;
-                if (checkedNodes.getLength() > 0) {
-                    checkedElement = (Element) checkedNodes.item(0);
-                } else {
-                    // Create checked element if it doesn't exist
-                    checkedElement = doc.createElementNS(
-                        "http://schemas.microsoft.com/office/word/2010/wordml", "w14:checked");
-                    checkbox.appendChild(checkedElement);
-                }
-                
-                // Set the val attribute to 1 (checked)
-                checkedElement.setAttribute("w14:val", "1");
-                
-                System.out.println("Checkbox set to checked");
-            }
-            
-            // Also update the display text/symbol
-            updateCheckboxSymbol(doc, true);
-            
-        } catch (Exception e) {
-            System.err.println("Error setting checkbox checked: " + e.getMessage());
-        }
-    }
-    
-    private static void updateCheckboxSymbol(org.w3c.dom.Document doc, boolean checked) {
-        try {
-            // Find text nodes that contain checkbox symbols
-            org.w3c.dom.NodeList textNodes = doc.getElementsByTagName("w:t");
-            
-            for (int i = 0; i < textNodes.getLength(); i++) {
-                Node textNode = textNodes.item(i);
-                String text = textNode.getTextContent();
-                
-                if (text.contains("☐") || text.contains("☑")) {
-                    // Replace with checked or unchecked symbol
-                    String newSymbol = checked ? "☑" : "☐";
-                    textNode.setTextContent(newSymbol);
-                    System.out.println("Updated checkbox symbol to: " + newSymbol);
-                }
-            }
-        } catch (Exception e) {
-            System.err.println("Error updating checkbox symbol: " + e.getMessage());
-        }
-    }
-    
-    private static void fixCheckboxesViaXML(MainDocumentPart documentPart) {
-        try {
-            // Get the raw XML
-            String documentXML = XmlUtils.marshaltoString(documentPart.getJaxbElement(), true);
-            
-            // Replace unchecked patterns with checked ones
-            // Pattern 1: w14:checked val="0" to val="1"
-            documentXML = documentXML.replaceAll(
-                "(<w14:checked[^>]*w14:val=\")0(\"[^>]*/>)", 
-                "$11$2"
-            );
-            
-            // Pattern 2: Add w14:checked element if missing
-            documentXML = documentXML.replaceAll(
-                "(<w14:checkbox[^>]*>)(?!.*<w14:checked)(.*?)(</w14:checkbox>)",
-                "$1<w14:checked w14:val=\"1\"/>$2$3"
-            );
-            
-            // Pattern 3: Replace checkbox symbols in text
-            documentXML = documentXML.replaceAll("☐", "☑");
-            
-            // Unmarshal the modified XML back
-            Object updatedElement = XmlUtils.unmarshalString(documentXML);
-            documentPart.setJaxbElement(updatedElement);
-            
-            System.out.println("Applied XML-based checkbox fixes");
-            
-        } catch (Exception e) {
-            System.err.println("Error in XML-based fix: " + e.getMessage());
-        }
-    }
-    
-    // Alternative method using direct namespace approach
-    public static void setW14CheckboxValue(MainDocumentPart documentPart, String checkboxTag, boolean checked) {
+    // Method 1: Find checkbox by content control tag
+    private static boolean checkByContentControlTag(MainDocumentPart documentPart, String tag, boolean checked) {
         try {
             String documentXML = XmlUtils.marshaltoString(documentPart.getJaxbElement(), true);
             
-            // Create the replacement pattern for specific checkbox
-            String searchPattern = "(<w:tag[^>]*w:val=\"" + checkboxTag + "\"[^>]*/>.*?" +
-                                 "<w14:checkbox[^>]*>)" +
-                                 "(?:<w14:checked[^>]*/>)?" +
-                                 "(.*?</w14:checkbox>)";
-                                 
-            String replacement = "$1<w14:checked w14:val=\"" + (checked ? "1" : "0") + "\"/>$2";
+            // Look for content control with specific tag that contains checkbox
+            String pattern = "(<w:sdt[^>]*>.*?<w:tag[^>]*w:val=\"" + Pattern.quote(tag) + "\"[^>]*/>.*?" +
+                           "<w14:checkbox[^>]*>)" +
+                           "(?:<w14:checked[^>]*/>)?" +
+                           "(.*?</w14:checkbox>.*?</w:sdt>)";
             
-            documentXML = documentXML.replaceAll(searchPattern, replacement);
+            Pattern p = Pattern.compile(pattern, Pattern.DOTALL);
+            Matcher m = p.matcher(documentXML);
             
-            // Update the document
-            Object updatedElement = XmlUtils.unmarshalString(documentXML);
-            documentPart.setJaxbElement(updatedElement);
+            if (m.find()) {
+                String replacement = m.group(1) + 
+                                   "<w14:checked w14:val=\"" + (checked ? "1" : "0") + "\"/>" + 
+                                   m.group(2);
+                documentXML = m.replaceFirst(replacement);
+                
+                // Update checkbox symbol
+                documentXML = updateCheckboxSymbolInXML(documentXML, tag, checked);
+                
+                Object updatedElement = XmlUtils.unmarshalString(documentXML);
+                documentPart.setJaxbElement(updatedElement);
+                return true;
+            }
+        } catch (Exception e) {
+            System.err.println("Error checking by tag: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    // Method 2: Find checkbox by content control alias/title
+    private static boolean checkByContentControlAlias(MainDocumentPart documentPart, String alias, boolean checked) {
+        try {
+            String documentXML = XmlUtils.marshaltoString(documentPart.getJaxbElement(), true);
+            
+            // Look for content control with specific alias/title
+            String pattern = "(<w:sdt[^>]*>.*?<w:alias[^>]*w:val=\"" + Pattern.quote(alias) + "\"[^>]*/>.*?" +
+                           "<w14:checkbox[^>]*>)" +
+                           "(?:<w14:checked[^>]*/>)?" +
+                           "(.*?</w14:checkbox>.*?</w:sdt>)";
+            
+            Pattern p = Pattern.compile(pattern, Pattern.DOTALL);
+            Matcher m = p.matcher(documentXML);
+            
+            if (m.find()) {
+                String replacement = m.group(1) + 
+                                   "<w14:checked w14:val=\"" + (checked ? "1" : "0") + "\"/>" + 
+                                   m.group(2);
+                documentXML = m.replaceFirst(replacement);
+                
+                Object updatedElement = XmlUtils.unmarshalString(documentXML);
+                documentPart.setJaxbElement(updatedElement);
+                return true;
+            }
+        } catch (Exception e) {
+            System.err.println("Error checking by alias: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    // Method 3: Find checkbox by nearby text content
+    private static boolean checkByNearbyText(MainDocumentPart documentPart, String nearbyText, boolean checked) {
+        try {
+            String documentXML = XmlUtils.marshaltoString(documentPart.getJaxbElement(), true);
+            
+            // Look for text followed by checkbox within reasonable distance
+            String pattern = "(<w:t[^>]*>[^<]*" + Pattern.quote(nearbyText) + "[^<]*</w:t>.*?" +
+                           "<w14:checkbox[^>]*>)" +
+                           "(?:<w14:checked[^>]*/>)?" +
+                           "(.*?</w14:checkbox>)";
+            
+            Pattern p = Pattern.compile(pattern, Pattern.DOTALL);
+            Matcher m = p.matcher(documentXML);
+            
+            if (m.find()) {
+                String replacement = m.group(1) + 
+                                   "<w14:checked w14:val=\"" + (checked ? "1" : "0") + "\"/>" + 
+                                   m.group(2);
+                documentXML = m.replaceFirst(replacement);
+                
+                // Update nearby checkbox symbol
+                documentXML = updateNearbyCheckboxSymbol(documentXML, nearbyText, checked);
+                
+                Object updatedElement = XmlUtils.unmarshalString(documentXML);
+                documentPart.setJaxbElement(updatedElement);
+                return true;
+            }
+        } catch (Exception e) {
+            System.err.println("Error checking by nearby text: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    // Method 4: Find checkbox by index (0-based)
+    private static boolean checkByIndex(MainDocumentPart documentPart, int index, boolean checked) {
+        try {
+            String documentXML = XmlUtils.marshaltoString(documentPart.getJaxbElement(), true);
+            
+            Pattern checkboxPattern = Pattern.compile("<w14:checkbox[^>]*>(?:<w14:checked[^>]*/>)?(.*?)</w14:checkbox>", Pattern.DOTALL);
+            Matcher m = checkboxPattern.matcher(documentXML);
+            
+            int currentIndex = 0;
+            while (m.find()) {
+                if (currentIndex == index) {
+                    String replacement = "<w14:checkbox>" + 
+                                       "<w14:checked w14:val=\"" + (checked ? "1" : "0") + "\"/>" + 
+                                       m.group(1) + 
+                                       "</w14:checkbox>";
+                    documentXML = documentXML.substring(0, m.start()) + replacement + documentXML.substring(m.end());
+                    
+                    Object updatedElement = XmlUtils.unmarshalString(documentXML);
+                    documentPart.setJaxbElement(updatedElement);
+                    return true;
+                }
+                currentIndex++;
+            }
+        } catch (Exception e) {
+            System.err.println("Error checking by index: " + e.getMessage());
+        }
+        return false;
+    }
+    
+    // Helper method to update checkbox symbol in XML for specific tag
+    private static String updateCheckboxSymbolInXML(String documentXML, String tag, boolean checked) {
+        try {
+            String symbol = checked ? "☑" : "☐";
+            String pattern = "(<w:tag[^>]*w:val=\"" + Pattern.quote(tag) + "\"[^>]*/>.*?<w:t[^>]*>)[☐☑](</w:t>)";
+            Pattern p = Pattern.compile(pattern, Pattern.DOTALL);
+            return p.matcher(documentXML).replaceFirst("$1" + symbol + "$2");
+        } catch (Exception e) {
+            return documentXML;
+        }
+    }
+    
+    // Helper method to update checkbox symbol near specific text
+    private static String updateNearbyCheckboxSymbol(String documentXML, String nearbyText, boolean checked) {
+        try {
+            String symbol = checked ? "☑" : "☐";
+            String pattern = "(<w:t[^>]*>[^<]*" + Pattern.quote(nearbyText) + "[^<]*</w:t>.*?<w:t[^>]*>)[☐☑](</w:t>)";
+            Pattern p = Pattern.compile(pattern, Pattern.DOTALL);
+            return p.matcher(documentXML).replaceFirst("$1" + symbol + "$2");
+        } catch (Exception e) {
+            return documentXML;
+        }
+    }
+    
+    // Utility method to list all checkboxes in the document
+    public static void listAllCheckboxes(String filePath) throws Docx4JException {
+        WordprocessingMLPackage wordPackage = WordprocessingMLPackage.load(new File(filePath));
+        MainDocumentPart documentPart = wordPackage.getMainDocumentPart();
+        
+        System.out.println("Found checkboxes:");
+        
+        try {
+            String documentXML = XmlUtils.marshaltoString(documentPart.getJaxbElement(), true);
+            
+            // Find content control tags
+            Pattern tagPattern = Pattern.compile("<w:tag[^>]*w:val=\"([^\"]*?)\"[^>]*/>.*?<w14:checkbox", Pattern.DOTALL);
+            Matcher m = tagPattern.matcher(documentXML);
+            int index = 0;
+            while (m.find()) {
+                System.out.println("  Tag: '" + m.group(1) + "' (Index: " + index + ")");
+                index++;
+            }
+            
+            // Find content control aliases
+            Pattern aliasPattern = Pattern.compile("<w:alias[^>]*w:val=\"([^\"]*?)\"[^>]*/>.*?<w14:checkbox", Pattern.DOTALL);
+            m = aliasPattern.matcher(documentXML);
+            while (m.find()) {
+                System.out.println("  Alias: '" + m.group(1) + "'");
+            }
             
         } catch (Exception e) {
-            System.err.println("Error setting specific checkbox: " + e.getMessage());
+            System.err.println("Error listing checkboxes: " + e.getMessage());
         }
     }
     
     public static void main(String[] args) {
         try {
-            // Example usage
             String inputFile = "input_document.docx";
             String outputFile = "output_document.docx";
             
-            fixCheckboxes(inputFile, outputFile);
+            // First, see what checkboxes are available
+            System.out.println("=== Available checkboxes ===");
+            listAllCheckboxes(inputFile);
             
-            // For specific checkbox by tag
-            // WordprocessingMLPackage pkg = WordprocessingMLPackage.load(new File(outputFile));
-            // setW14CheckboxValue(pkg.getMainDocumentPart(), "MyCheckboxTag", true);
-            // pkg.save(new File("final_output.docx"));
+            // Example 1: Check specific checkboxes by tag
+            List<String> checkboxesToCheck = Arrays.asList("checkbox1", "checkbox3", "mySpecialCheckbox");
+            checkSpecificCheckboxes(inputFile, outputFile, checkboxesToCheck);
+            
+            // Example 2: Check individual checkboxes by different methods
+            WordprocessingMLPackage pkg = WordprocessingMLPackage.load(new File(inputFile));
+            MainDocumentPart documentPart = pkg.getMainDocumentPart();
+            
+            // By content control tag
+            checkCheckboxById(documentPart, "agreeTerms", true);
+            
+            // By content control alias/title
+            checkCheckboxById(documentPart, "Subscribe to Newsletter", true);
+            
+            // By nearby text content
+            checkCheckboxById(documentPart, "I agree to", true);
+            
+            // By index (0-based, first checkbox = 0)
+            checkCheckboxById(documentPart, "0", true);  // Check first checkbox
+            checkCheckboxById(documentPart, "2", false); // Uncheck third checkbox
+            
+            pkg.save(new File("individually_checked.docx"));
+            
+            // Example 3: Selective checking with map
+            Map<String, Boolean> checkboxStates = new HashMap<>();
+            checkboxStates.put("checkbox1", true);
+            checkboxStates.put("checkbox2", false);
+            checkboxStates.put("checkbox3", true);
+            
+            setMultipleCheckboxStates(inputFile, "map_based_output.docx", checkboxStates);
             
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
+    
+    // Helper method to set multiple checkbox states
+    public static void setMultipleCheckboxStates(String inputPath, String outputPath, 
+                                                Map<String, Boolean> checkboxStates) throws Docx4JException {
+        WordprocessingMLPackage wordPackage = WordprocessingMLPackage.load(new File(inputPath));
+        MainDocumentPart documentPart = wordPackage.getMainDocumentPart();
+        
+        for (Map.Entry<String, Boolean> entry : checkboxStates.entrySet()) {
+            checkCheckboxById(documentPart, entry.getKey(), entry.getValue());
+        }
+        
+        wordPackage.save(new File(outputPath));
+        System.out.println("Multiple checkbox states set and saved to: " + outputPath);
+    }
+}
 }
